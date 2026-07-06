@@ -93,6 +93,52 @@ function normalizeQuestionsResponse(rawText, fallbackQuestions = []) {
   return fallbackQuestions.length > 0 ? fallbackQuestions : []
 }
 
+function parseScoreValue(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.min(10, value > 10 ? value / 10 : value))
+  }
+
+  if (typeof value === 'string') {
+    const match = value.match(/(\d+(?:\.\d+)?)/)
+    if (match) {
+      const parsed = Number(match[1])
+      if (Number.isFinite(parsed)) {
+        return Math.max(0, Math.min(10, parsed > 10 ? parsed / 10 : parsed))
+      }
+    }
+  }
+
+  return null
+}
+
+function buildFallbackEvaluation(answers = []) {
+  const safeAnswers = Array.isArray(answers) ? answers : []
+  const results = safeAnswers.map((item, index) => {
+    const answerText = typeof item?.answer === 'string' ? item.answer : ''
+    const trimmed = answerText.trim()
+    const wordCount = trimmed ? trimmed.split(/\s+/).filter(Boolean).length : 0
+    const hasTechnicalContent = /\b(api|database|mongodb|node|express|react|javascript|typescript|deployment|debug|testing|docker|git|authentication|server|frontend|backend|service|system|algorithm|architecture)\b/i.test(trimmed)
+    const score = wordCount >= 8 ? (hasTechnicalContent ? 8 : 7) : (trimmed ? 6 : 4)
+
+    return {
+      question: item?.question || `Answer ${index + 1}`,
+      answer: answerText,
+      score: `${score}/10`,
+      overAllFeedback: trimmed ? 'Answer provided with useful detail.' : 'Please provide a more complete response.'
+    }
+  })
+
+  const totalScore = results.reduce((sum, item) => sum + (parseScoreValue(item.score) || 0), 0)
+  const averageScore = results.length > 0 ? totalScore / results.length : 0
+
+  return {
+    results,
+    overAllFeedback: 'Evaluation completed with fallback scoring because the AI service was unavailable.',
+    improvements: ['Add concrete examples and explain trade-offs clearly.'],
+    finalRating: averageScore >= 8 ? 'A' : averageScore >= 6 ? 'B' : averageScore >= 4 ? 'C' : 'D'
+  }
+}
+
 async function callAiModel(prompt) {
   const aiUrl = process.env.AI_API_URL || process.env.OLLAMA_URL || 'http://localhost:11434/api/generate'
   const aiModel = process.env.AI_MODEL || 'qwen2.5:3b'
@@ -106,7 +152,7 @@ async function callAiModel(prompt) {
       timeout: 30000
     })
 
-    return response?.data?.response || ''
+    return response?.data?.response || response?.data?.choices?.[0]?.message?.content || response?.data?.output_text || ''
   } catch (error) {
     console.error('AI request failed:', error.message)
     return ''
@@ -230,23 +276,31 @@ ${JSON.stringify(answers)}
       const lastBracket = cleanedText.lastIndexOf('}')
 
       if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-        evaluation = JSON.parse(cleanedText.slice(firstBracket, lastBracket + 1))
-      } else {
-        evaluation = {
-          results: [],
-          overAllFeedback: 'Evaluation completed with fallback response.',
-          improvements: ['Practice more and explain your answers clearly.'],
-          finalRating: 'B'
+        try {
+          evaluation = JSON.parse(cleanedText.slice(firstBracket, lastBracket + 1))
+        } catch {
+          evaluation = null
         }
       }
+    }
+
+    if (!evaluation || !Array.isArray(evaluation?.results) || evaluation.results.length === 0) {
+      evaluation = buildFallbackEvaluation(answers)
     }
 
     const results = Array.isArray(evaluation?.results) ? evaluation.results : []
     let totalScore = 0
 
     results.forEach((item) => {
-      totalScore += Number(item.score) || 0
+      const score = parseScoreValue(item?.score)
+      if (score !== null) {
+        totalScore += score
+      }
     })
+
+    if (results.length > 0) {
+      totalScore = totalScore / results.length
+    }
 
     if (interviewId && interviewId !== 'test') {
       await Interview.findByIdAndUpdate(interviewId, {
