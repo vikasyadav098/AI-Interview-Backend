@@ -93,6 +93,26 @@ function normalizeQuestionsResponse(rawText, fallbackQuestions = []) {
   return fallbackQuestions.length > 0 ? fallbackQuestions : []
 }
 
+async function callAiModel(prompt) {
+  const aiUrl = process.env.AI_API_URL || process.env.OLLAMA_URL || 'http://localhost:11434/api/generate'
+  const aiModel = process.env.AI_MODEL || 'qwen2.5:3b'
+
+  try {
+    const response = await axios.post(aiUrl, {
+      model: aiModel,
+      prompt,
+      stream: false,
+    }, {
+      timeout: 30000
+    })
+
+    return response?.data?.response || ''
+  } catch (error) {
+    console.error('AI request failed:', error.message)
+    return ''
+  }
+}
+
 //  CREATE INTERVIEW
 async function createInterview(req, res) {
   try {
@@ -135,13 +155,7 @@ Return ONLY JSON array:
 }]
 `
 
-    const response = await axios.post("http://localhost:11434/api/generate", {
-      model: "qwen2.5:3b",
-      prompt,
-      stream: false,
-    })
-
-    const rawText = response?.data?.response || ''
+    const rawText = await callAiModel(prompt)
     const fallbackQuestions = buildFallbackQuestions(role, experience, difficulty, techStack)
     const questionsArray = normalizeQuestionsResponse(rawText, fallbackQuestions)
 
@@ -201,13 +215,7 @@ Answers:
 ${JSON.stringify(answers)}
 `
 
-    const response = await axios.post("http://localhost:11434/api/generate", {
-      model: "qwen2.5:3b",
-      prompt,
-      stream: false,
-    })
-
-    const rawText = response?.data?.response || ''
+    const rawText = await callAiModel(prompt)
     const cleanedText = rawText
       .replace(/^```(?:json)?\s*/i, '')
       .replace(/\s*```$/i, '')
